@@ -7,7 +7,7 @@ use crate::policy::{ExecutionPolicy, RuleAttemptPolicy};
 use crate::program::{ExecutableProgram, ReturnOutput, ReturnOutputView, RunResult};
 use crate::trace::RuntimeStateView;
 
-use super::engine::TerminalRunCore;
+use super::engine::{FailedRuleAttemptTerminal, TerminalRunCore};
 use super::session::{BorrowedRuleAttemptCursor, BorrowedRunSession};
 
 /// Result of advancing a borrowed run session once.
@@ -727,15 +727,14 @@ impl<'program> BorrowedRuleAttemptFailedRun<'program> {
     /// Captures a failed borrowed rule-attempt session without committing runtime state.
     pub(super) fn new(
         error: RuleAttemptStepError,
-        attempts: RuleAttemptCount,
         program: &'program ExecutableProgram,
-        core: TerminalRunCore,
+        terminal: FailedRuleAttemptTerminal,
     ) -> Self {
         Self {
             error,
-            attempts,
+            attempts: terminal.completed_attempts(),
             program,
-            core,
+            core: terminal.into_terminal_core(),
         }
     }
 

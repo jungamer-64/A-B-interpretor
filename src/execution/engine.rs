@@ -71,6 +71,15 @@ pub(super) struct TerminalRunCore {
     steps: StepCount,
 }
 
+/// Terminal rule-attempt failure state before the current attempt can commit.
+#[derive(Debug)]
+pub(super) struct FailedRuleAttemptTerminal {
+    /// Rule attempts committed before the failed candidate.
+    attempts: RuleAttemptCount,
+    /// Terminal runtime core preserving uncommitted runtime state.
+    core: TerminalRunCore,
+}
+
 /// Runtime session that borrows one executable program.
 pub(super) struct Session<'program, E: ExecutionPolicy> {
     /// Borrowed parsed program.
@@ -162,6 +171,15 @@ impl<E: ExecutionPolicy, A: RuleAttemptPolicy> AttemptRunCoreParts<E, A> {
             steps,
         }
     }
+
+    /// Converts active runtime state into a terminal rule-attempt failure.
+    pub(super) fn into_failed_rule_attempt_terminal(self) -> FailedRuleAttemptTerminal {
+        let attempts = self.completed_attempts();
+        FailedRuleAttemptTerminal {
+            attempts,
+            core: self.into_terminal(),
+        }
+    }
 }
 
 impl TerminalRunCore {
@@ -186,6 +204,18 @@ impl TerminalRunCore {
             .into_snapshot()
             .map_err(RunFinishError::FinalOutput)?;
         Ok(RunResult::stable(output, self.steps))
+    }
+}
+
+impl FailedRuleAttemptTerminal {
+    /// Number of attempts committed before the failed candidate.
+    pub(super) const fn completed_attempts(&self) -> RuleAttemptCount {
+        self.attempts
+    }
+
+    /// Consumes the failure state into its terminal runtime core.
+    pub(super) fn into_terminal_core(self) -> TerminalRunCore {
+        self.core
     }
 }
 
