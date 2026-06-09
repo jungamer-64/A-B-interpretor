@@ -1,6 +1,5 @@
 use crate::bytes::RuntimeStateByteCount;
 use crate::error::RuleAttemptStepError;
-use crate::limits::RuleAttemptCount;
 use crate::policy::{ExecutionPolicy, RuleAttemptPolicy};
 use crate::program::ExecutableProgram;
 use crate::runtime::action::{AppliedRule, PreparedRuleStep, prepare_matched_rule};
@@ -8,7 +7,6 @@ use crate::runtime::budget::{RuleAttemptBudgetState, RuleAttemptReservation, Run
 use crate::runtime::matcher::{EvaluatedRuleMiss, MatchedRuleApplication, RuleAttemptEvaluation};
 use crate::runtime::once::{ContinuingRuntimeRulePass, FinalRuntimeRulePass};
 use crate::runtime::rewrite::RewriteScratch;
-use crate::runtime::state::State;
 
 use super::engine::{
     AttemptRunCoreParts, ContinuingRuleAttemptCore, ContinuingRuleAttemptRun, FinalRuleAttemptCore,
@@ -79,14 +77,14 @@ where
 
     match pass.attempt_current_rule(&parts.state) {
         RuleAttemptEvaluation::Miss(miss) => {
-            let attempt = reservation.commit();
+            let committed = CommittedRuleAttemptMiss::commit(reservation, miss);
             let cursor =
                 BorrowedRuleAttemptCursor::from_runtime_pass(program, parts, pass.commit_miss());
-            match miss {
+            match committed.into_miss() {
                 EvaluatedRuleMiss::AlwaysRewriteStateMismatch(rule) => {
                     BorrowedContinuingRuleAttemptTransition::AlwaysRewriteStateMismatch(
                         BorrowedAlwaysRewriteStateMismatchRuleAttempt {
-                            attempt,
+                            attempt: committed.attempt(),
                             rule,
                             cursor,
                         },
@@ -95,7 +93,7 @@ where
                 EvaluatedRuleMiss::OnceRewriteStateMismatch(rule) => {
                     BorrowedContinuingRuleAttemptTransition::OnceRewriteStateMismatch(
                         BorrowedOnceRewriteStateMismatchRuleAttempt {
-                            attempt,
+                            attempt: committed.attempt(),
                             rule,
                             cursor,
                         },
@@ -104,7 +102,7 @@ where
                 EvaluatedRuleMiss::AlwaysReturnStateMismatch(rule) => {
                     BorrowedContinuingRuleAttemptTransition::AlwaysReturnStateMismatch(
                         BorrowedAlwaysReturnStateMismatchRuleAttempt {
-                            attempt,
+                            attempt: committed.attempt(),
                             rule,
                             cursor,
                         },
@@ -113,7 +111,7 @@ where
                 EvaluatedRuleMiss::OnceReturnStateMismatch(rule) => {
                     BorrowedContinuingRuleAttemptTransition::OnceReturnStateMismatch(
                         BorrowedOnceReturnStateMismatchRuleAttempt {
-                            attempt,
+                            attempt: committed.attempt(),
                             rule,
                             cursor,
                         },
@@ -122,7 +120,7 @@ where
                 EvaluatedRuleMiss::OnceRewriteConsumed(rule) => {
                     BorrowedContinuingRuleAttemptTransition::OnceRewriteConsumed(
                         BorrowedOnceRewriteConsumedRuleAttempt {
-                            attempt,
+                            attempt: committed.attempt(),
                             rule,
                             cursor,
                         },
@@ -141,13 +139,9 @@ where
                 Ok(prepared) => prepared,
                 Err(error) => return failed_continuing_rule_attempt(program, parts, error),
             };
-            let (attempt, applied) = commit_prepared_rule_attempt_application(
-                &mut parts.state,
-                &mut parts.scratch,
-                reservation,
-                prepared,
-            );
-            match applied {
+            let prepared = PreparedRuleAttemptApplication::new(reservation, prepared);
+            let committed = prepared.commit(&mut parts.state, &mut parts.scratch);
+            match committed.into_applied() {
                 AppliedRule::AlwaysRewritten(committed) => {
                     let step = committed.step();
                     let rule = committed.rule();
@@ -158,7 +152,7 @@ where
                     );
                     BorrowedContinuingRuleAttemptTransition::AlwaysRewritten(
                         BorrowedRuleAttemptAlwaysRewriteStep {
-                            attempt,
+                            attempt: committed.attempt(),
                             step,
                             rule,
                             cursor,
@@ -175,7 +169,7 @@ where
                     );
                     BorrowedContinuingRuleAttemptTransition::OnceRewritten(
                         BorrowedRuleAttemptOnceRewriteStep {
-                            attempt,
+                            attempt: committed.attempt(),
                             step,
                             rule,
                             cursor,
@@ -188,7 +182,7 @@ where
                     let output = committed.into_output();
                     BorrowedContinuingRuleAttemptTransition::AlwaysReturned(
                         BorrowedRuleAttemptAlwaysReturnRun {
-                            attempt,
+                            attempt: committed.attempt(),
                             step,
                             rule,
                             program,
@@ -202,7 +196,7 @@ where
                     let output = committed.into_output();
                     BorrowedContinuingRuleAttemptTransition::OnceReturned(
                         BorrowedRuleAttemptOnceReturnRun {
-                            attempt,
+                            attempt: committed.attempt(),
                             step,
                             rule,
                             program,
@@ -233,13 +227,13 @@ where
 
     match pass.attempt_current_rule(&parts.state) {
         RuleAttemptEvaluation::Miss(miss) => {
-            let attempts = reservation.commit();
+            let committed = CommittedRuleAttemptMiss::commit(reservation, miss);
             let core = parts.into_terminal();
-            match miss {
+            match committed.into_miss() {
                 EvaluatedRuleMiss::AlwaysRewriteStateMismatch(rule) => {
                     BorrowedFinalRuleAttemptTransition::StableAfterAlwaysRewriteStateMismatch(
                         BorrowedRuleAttemptStableAfterAlwaysRewriteStateMismatch {
-                            attempts,
+                            attempts: committed.attempt(),
                             rule,
                             program,
                             core,
@@ -249,7 +243,7 @@ where
                 EvaluatedRuleMiss::OnceRewriteStateMismatch(rule) => {
                     BorrowedFinalRuleAttemptTransition::StableAfterOnceRewriteStateMismatch(
                         BorrowedRuleAttemptStableAfterOnceRewriteStateMismatch {
-                            attempts,
+                            attempts: committed.attempt(),
                             rule,
                             program,
                             core,
@@ -259,7 +253,7 @@ where
                 EvaluatedRuleMiss::AlwaysReturnStateMismatch(rule) => {
                     BorrowedFinalRuleAttemptTransition::StableAfterAlwaysReturnStateMismatch(
                         BorrowedRuleAttemptStableAfterAlwaysReturnStateMismatch {
-                            attempts,
+                            attempts: committed.attempt(),
                             rule,
                             program,
                             core,
@@ -269,7 +263,7 @@ where
                 EvaluatedRuleMiss::OnceReturnStateMismatch(rule) => {
                     BorrowedFinalRuleAttemptTransition::StableAfterOnceReturnStateMismatch(
                         BorrowedRuleAttemptStableAfterOnceReturnStateMismatch {
-                            attempts,
+                            attempts: committed.attempt(),
                             rule,
                             program,
                             core,
@@ -279,7 +273,7 @@ where
                 EvaluatedRuleMiss::OnceRewriteConsumed(rule) => {
                     BorrowedFinalRuleAttemptTransition::StableAfterOnceRewriteConsumed(
                         BorrowedRuleAttemptStableAfterOnceRewriteConsumed {
-                            attempts,
+                            attempts: committed.attempt(),
                             rule,
                             program,
                             core,
@@ -299,13 +293,9 @@ where
                 Ok(prepared) => prepared,
                 Err(error) => return failed_final_rule_attempt(program, parts, error),
             };
-            let (attempt, applied) = commit_prepared_rule_attempt_application(
-                &mut parts.state,
-                &mut parts.scratch,
-                reservation,
-                prepared,
-            );
-            match applied {
+            let prepared = PreparedRuleAttemptApplication::new(reservation, prepared);
+            let committed = prepared.commit(&mut parts.state, &mut parts.scratch);
+            match committed.into_applied() {
                 AppliedRule::AlwaysRewritten(committed) => {
                     let step = committed.step();
                     let rule = committed.rule();
@@ -316,7 +306,7 @@ where
                     );
                     BorrowedFinalRuleAttemptTransition::AlwaysRewritten(
                         BorrowedRuleAttemptAlwaysRewriteStep {
-                            attempt,
+                            attempt: committed.attempt(),
                             step,
                             rule,
                             cursor,
@@ -333,7 +323,7 @@ where
                     );
                     BorrowedFinalRuleAttemptTransition::OnceRewritten(
                         BorrowedRuleAttemptOnceRewriteStep {
-                            attempt,
+                            attempt: committed.attempt(),
                             step,
                             rule,
                             cursor,
@@ -346,7 +336,7 @@ where
                     let output = committed.into_output();
                     BorrowedFinalRuleAttemptTransition::AlwaysReturned(
                         BorrowedRuleAttemptAlwaysReturnRun {
-                            attempt,
+                            attempt: committed.attempt(),
                             step,
                             rule,
                             program,
@@ -360,7 +350,7 @@ where
                     let output = committed.into_output();
                     BorrowedFinalRuleAttemptTransition::OnceReturned(
                         BorrowedRuleAttemptOnceReturnRun {
-                            attempt,
+                            attempt: committed.attempt(),
                             step,
                             rule,
                             program,
@@ -443,24 +433,4 @@ where
         program,
         parts.into_terminal(),
     ))
-}
-
-/// Commits one prepared rule-attempt application.
-///
-/// This function is called only after rule preparation succeeds. The
-/// rule-attempt reservation commits first, followed by runtime step,
-/// once-state, and state side effects.
-fn commit_prepared_rule_attempt_application<'program, 'once, 'budget, E, A>(
-    state: &mut State,
-    scratch: &mut RewriteScratch,
-    attempt_reservation: RuleAttemptReservation<'_, A>,
-    prepared: PreparedRuleStep<'program, 'once, 'budget, E>,
-) -> (RuleAttemptCount, AppliedRule<'program>)
-where
-    E: ExecutionPolicy,
-    A: RuleAttemptPolicy,
-{
-    let attempt = attempt_reservation.commit();
-    let applied = prepared.commit(state, scratch);
-    (attempt, applied)
 }
